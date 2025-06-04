@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WebSocket Test</title>
+</head>
+<body>
+  <h1>WebSocket Test</h1>
+  <script>
+    function connectWebSocket() {
+      const ws = new WebSocket('ws://localhost:8000/ws/detect');
+
+      ws.onopen = () => {
+        console.log('WebSocket connected');
+        ws.send('Hello from the client!'); // Send a message after connection
+      };
+
+      ws.onmessage = (event) => {
+        console.log('Received: ' + event.data);
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket closed');
+        // Retry connection after a delay
+        setTimeout(connectWebSocket, 3000); // Retry every 3 seconds
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+    }
+
+    connectWebSocket(); // Initial connection attempt
+  </script>
+</body>
+</html>
