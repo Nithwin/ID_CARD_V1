@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 
 
-import './App.css'; // Assuming you might have some global styles
-
 const VIDEO_STREAM_URL = 'http://localhost:5000/video_feed';
 const STATUS_API_URL = 'http://localhost:5000/api/status';
 const STATUS_POLLING_INTERVAL_MS = 3000; // Fetch status every 3 seconds
