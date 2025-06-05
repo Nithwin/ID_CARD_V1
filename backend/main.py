@@ -8,6 +8,8 @@ import time
 import os
 import numpy as np
 from io import BytesIO
+from datetime import datetime
+import glob # For managing saved images
 
 # --- Configuration ---
 # Correctly determine the script directory and model path
@@ -17,6 +19,12 @@ MODEL_PATH = os.path.join(SCRIPT_DIR, "best.pt") # Assumes best.pt is in the sam
 TARGET_CLASS_NAME = "with_card"  # The class name for "without card" as defined in your model
 WEBCAM_INDEX = 1  # 0 for default webcam, or update to path for a video file
 CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence for a detection to be considered valid
+
+# Image Saving Configuration
+SAVED_IMAGES_DIR_NAME = "saved_detections"
+# Path relative to the backend script, pointing to frontend's public directory
+SAVED_IMAGES_PATH = os.path.join(SCRIPT_DIR, "..", "idcard", "public", SAVED_IMAGES_DIR_NAME)
+MAX_SAVED_IMAGES = 20
 
 # --- Global Variables ---
 app = Flask(__name__)
@@ -28,6 +36,50 @@ frame_lock = threading.Lock() # Single lock for both frame types
 model = None
 camera_active = False
 model_class_names = [] # To store class names from the model
+saved_image_filenames = [] # List to keep track of saved image filenames (newest first)
+
+# --- Helper Functions ---
+def manage_saved_images(new_filename):
+    """Manages the list of saved images, ensuring it doesn't exceed MAX_SAVED_IMAGES."""
+    global saved_image_filenames
+    
+    # Add new image to the beginning of the list (newest first)
+    saved_image_filenames.insert(0, new_filename)
+    
+    # If more images than allowed, remove the oldest ones
+    while len(saved_image_filenames) > MAX_SAVED_IMAGES:
+        oldest_filename = saved_image_filenames.pop() # Remove from the end (oldest)
+        try:
+            oldest_filepath = os.path.join(SAVED_IMAGES_PATH, oldest_filename)
+            if os.path.exists(oldest_filepath):
+                os.remove(oldest_filepath)
+                print(f"Removed old image: {oldest_filename}")
+        except Exception as e:
+            print(f"Error removing old image {oldest_filename}: {e}")
+
+def initial_load_saved_images():
+    """Loads existing images from the save directory on startup."""
+    global saved_image_filenames
+    if not os.path.exists(SAVED_IMAGES_PATH):
+        os.makedirs(SAVED_IMAGES_PATH, exist_ok=True)
+        return
+
+    # Get all jpg files, sort by modification time (newest first)
+    try:
+        files = glob.glob(os.path.join(SAVED_IMAGES_PATH, "*.jpg"))
+        # Sort by modification time, newest first
+        files.sort(key=os.path.getmtime, reverse=True)
+        saved_image_filenames = [os.path.basename(f) for f in files]
+        
+        # Trim if more than max (e.g., if app was stopped and restarted with too many files)
+        while len(saved_image_filenames) > MAX_SAVED_IMAGES:
+            oldest_filename = saved_image_filenames.pop()
+            # No need to delete file here, manage_saved_images will handle future deletions
+            # This just syncs the list with the MAX_SAVED_IMAGES limit
+        print(f"Initial scan: Found {len(saved_image_filenames)} existing saved images.")
+    except Exception as e:
+        print(f"Error during initial scan of saved images: {e}")
+
 
 # --- Model Loading ---
 def load_yolo_model():
@@ -138,14 +190,30 @@ def video_processing_loop():
             # Also update the base64 image if the target class was detected (for the other API endpoint)
             if detected_target_class_in_frame:
                 try:
-                    is_success, buffer = cv2.imencode('.jpg', processed_frame)
-                    if is_success:
-                        latest_frame_with_detection_base64 = base64.b64encode(buffer).decode('utf-8')
-                        # print(f"Updated latest_frame_with_detection_base64 for '{TARGET_CLASS_NAME}'")
+                    # Update base64 for API
+                    is_success_b64, buffer_b64 = cv2.imencode('.jpg', processed_frame)
+                    if is_success_b64:
+                        latest_frame_with_detection_base64 = base64.b64encode(buffer_b64).decode('utf-8')
                     else:
                         print("Error: cv2.imencode for base64 failed.")
+
+                    # Save image to file
+                    if not os.path.exists(SAVED_IMAGES_PATH):
+                        os.makedirs(SAVED_IMAGES_PATH, exist_ok=True)
+                    
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3] # Milliseconds
+                    filename = f"detection_{TARGET_CLASS_NAME.replace(' ', '_')}_{timestamp}.jpg"
+                    save_path = os.path.join(SAVED_IMAGES_PATH, filename)
+                    
+                    is_success_save = cv2.imwrite(save_path, processed_frame)
+                    if is_success_save:
+                        print(f"Saved detected image: {filename}")
+                        manage_saved_images(filename) # Add to list and manage old files
+                    else:
+                        print(f"Error: Failed to save image to {save_path}")
+
                 except Exception as e:
-                    print(f"Error encoding frame for base64: {e}")
+                    print(f"Error processing/saving detected frame: {e}")
             # else:
                 # Optionally clear latest_frame_with_detection_base64 if no target detected in this frame
                 # latest_frame_with_detection_base64 = None
@@ -223,17 +291,29 @@ def get_status():
     }
     return jsonify(status_info)
 
+@app.route('/api/saved_images', methods=['GET'])
+def get_saved_images():
+    """Returns a list of currently saved image filenames, newest first."""
+    with frame_lock: # Ensure thread safety if saved_image_filenames is modified elsewhere
+        # Return a copy to avoid issues if the list is modified during iteration by another thread
+        images_to_send = list(saved_image_filenames)
+    return jsonify({"images": images_to_send, "base_url": f"/{SAVED_IMAGES_DIR_NAME}/"})
+
+
 # --- Main Execution ---
 if __name__ == '__main__':
+    initial_load_saved_images() # Scan for existing images on startup
     if load_yolo_model():
         video_thread = threading.Thread(target=video_processing_loop, daemon=True)
         video_thread.start()
         
         print(f"Flask server starting on http://0.0.0.0:5000")
+        print(f"Saved images will be stored in: {SAVED_IMAGES_PATH}")
         print(f"API Endpoints:")
         print(f"  GET /video_feed                      - Live video stream with detections.")
         print(f"  GET /api/latest_detected_image     - Fetches the latest frame if '{TARGET_CLASS_NAME}' was detected (for single image use).")
         print(f"  GET /api/status                      - Gets the current status of the server and detection.")
+        print(f"  GET /api/saved_images                - Gets the list of saved detection images.")
         app.run(host='0.0.0.0', port=5000, debug=False, threaded=True) # threaded=True can help with multiple requests
     else:
         print("Failed to load model. Flask server will not start.")
