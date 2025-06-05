@@ -44,7 +44,7 @@ function SavedImagesPage() {
         </p>
         <div className="text-center mt-4">
           <Link 
-            to="/live-detection" 
+            to="/detect" 
             className="bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded-lg transition duration-300 ease-in-out transform hover:scale-105"
           >
             Back to Live Detection
